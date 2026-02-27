@@ -5,7 +5,7 @@ import { yaml } from '@codemirror/lang-yaml';
 import { Play, Loader2, Database, FileJson, FileText, Clock, AlertCircle, Settings, X, CheckCircle2, Download, Eraser, ShieldCheck, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
 const DEFAULT_SCHEMA = `project: supply_chain_data_generator
 version: "1.0.0"
