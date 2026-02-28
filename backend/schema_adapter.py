@@ -21,7 +21,7 @@ keys (temporal, database, global_messiness) it is returned unchanged.
 
 from __future__ import annotations
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +79,27 @@ def adapt_schema(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     return out
 
+def _normalize_columns_if_dict(raw_cols: Union[List, Dict, Any]) -> List[Dict]:
+    """Normalize user-friendly shorthand dict of columns -> valid list of column dicts."""
+    if isinstance(raw_cols, dict):
+        normalized = []
+        for col_name, col_val in raw_cols.items():
+            if isinstance(col_val, list):
+                normalized.append({"name": col_name, "type": "choice", "choices": col_val})
+            elif isinstance(col_val, dict):
+                new_col = dict(col_val)
+                new_col["name"] = col_name
+                if "type" not in new_col:
+                    new_col["type"] = "integer"
+                normalized.append(new_col)
+            elif isinstance(col_val, str):
+                normalized.append({"name": col_name, "type": col_val})
+            else:
+                normalized.append({"name": col_name, "type": "string"})
+        return normalized
+    elif isinstance(raw_cols, list):
+        return raw_cols
+    return []
 
 # ---------------------------------------------------------------------------
 # Per-entity adapters
@@ -88,7 +109,9 @@ def _adapt_db_entity(e: Dict) -> Dict:
     """Convert a database source_type entity to the internal DB entity format."""
     name       = e.get("target", e["name"])        # prefer explicit target table name
     row_count  = int(e.get("volume", 0) or e.get("row_count", 100))
-    columns    = [_adapt_column(c) for c in e.get("columns", [])]
+    raw_cols   = e.get("columns", [])
+    norm_cols  = _normalize_columns_if_dict(raw_cols)
+    columns    = [_adapt_column(c) for c in norm_cols if isinstance(c, dict)]
     messiness  = _adapt_messiness(e.get("messiness", {}))
 
     out: Dict[str, Any] = {
@@ -113,7 +136,9 @@ def _adapt_file_source(e: Dict) -> Dict:
     num_files  = int(e.get("num_files", 0) or max(1, volume // 500))
     rows_per   = int(e.get("rows_per_file", 0) or volume // max(1, num_files))
     frequency  = str(e.get("frequency", "daily"))
-    columns    = [_adapt_column(c) for c in e.get("columns", [])]
+    raw_cols   = e.get("columns", [])
+    norm_cols  = _normalize_columns_if_dict(raw_cols)
+    columns    = [_adapt_column(c) for c in norm_cols if isinstance(c, dict)]
     messiness  = _adapt_messiness(e.get("messiness", {}))
 
     # derive output_dir and filename_pattern from path_structure if present
@@ -159,7 +184,8 @@ def _adapt_api_dump(e: Dict) -> Dict:
 
     # Columns can come from "fields" (user format) or "columns" (internal)
     raw_cols  = e.get("fields") or e.get("columns") or []
-    columns   = [_adapt_column(c) for c in raw_cols]
+    norm_cols = _normalize_columns_if_dict(raw_cols)
+    columns   = [_adapt_column(c) for c in norm_cols if isinstance(c, dict)]
     messiness = _adapt_messiness(e.get("messiness", {}))
 
     out: Dict[str, Any] = {

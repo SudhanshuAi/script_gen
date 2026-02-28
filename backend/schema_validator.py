@@ -196,7 +196,7 @@ def _validate_internal_format(raw: Dict, errors: List, warnings: List) -> Tuple[
                 if "name" in ent:
                     all_entity_names.append(ent["name"])
             # Check FK references
-            _check_fk_references(entities, "database.entities", errors, all_entity_names)
+            _check_fk_references(entities, "database.entities", errors, warnings, all_entity_names)
 
     # file_sources
     fs = raw.get("file_sources", [])
@@ -290,7 +290,7 @@ def _validate_user_format(raw: Dict, errors: List, warnings: List) -> Tuple[int,
             all_entity_names.append(ent.get("target", ent["name"]))
 
     # FK reference checks (only within database entities)
-    _check_fk_references(db_entities_for_fk, "entities", errors, all_entity_names)
+    _check_fk_references(db_entities_for_fk, "entities", errors, warnings, all_entity_names)
 
     # global_messiness (also accepted at top level in user format)
     gm = raw.get("global_messiness")
@@ -331,13 +331,35 @@ def _validate_entity(ent: Dict, path: str, errors: List, warnings: List, kind: s
             warnings.append({"path": f"{path}.row_count", "message": f"row_count of {int(row_count):,} is very large and may take a long time to generate."})
 
     # columns / fields
-    columns = ent.get("columns") or ent.get("fields") or []
+    raw_columns = ent.get("columns") or ent.get("fields")
+    
+    # Handle the shorthand format where columns is a dict: role: ["a", "b"]
+    if isinstance(raw_columns, dict):
+        normalized = []
+        for col_name, col_val in raw_columns.items():
+            if isinstance(col_val, list):
+                normalized.append({"name": col_name, "type": "choice", "choices": col_val})
+            elif isinstance(col_val, dict):
+                new_col = dict(col_val)
+                new_col["name"] = col_name
+                if "type" not in new_col:
+                    new_col["type"] = "integer" # intelligent guess for dicts without type
+                normalized.append(new_col)
+            elif isinstance(col_val, str):
+                normalized.append({"name": col_name, "type": col_val})
+            else:
+                normalized.append({"name": col_name, "type": "string"})
+        ent["columns"] = normalized
+        columns = normalized
+    else:
+        columns = raw_columns or []
+
     if not columns:
         errors.append({"path": f"{path}.columns", "message": f"Entity '{name or '?'}' has no columns defined."})
         return 1, 0
 
     if not isinstance(columns, list):
-        errors.append({"path": f"{path}.columns", "message": "'columns' must be a list."})
+        errors.append({"path": f"{path}.columns", "message": "'columns' must be a list or a shorthand dictionary."})
         return 1, 0
 
     col_names_seen: List[str] = []
@@ -534,11 +556,17 @@ def _validate_api_dump_internal(ent: Dict, path: str, errors: List, warnings: Li
 # FK reference cross-check
 # ---------------------------------------------------------------------------
 
-def _check_fk_references(entities: List[Dict], root_path: str, errors: List, all_names: List[str]) -> None:
+def _check_fk_references(entities: List[Dict], root_path: str, errors: List, warnings: List, all_names: List[str]) -> None:
     """Check that foreign_key 'ref' points to an existing entity."""
     for i, ent in enumerate(entities):
         columns = ent.get("columns") or ent.get("fields") or []
+        if not isinstance(columns, list):
+            continue
+            
         for ci, col in enumerate(columns):
+            if not isinstance(col, dict):
+                continue
+                
             ct = str(col.get("type", "")).lower()
             ref = col.get("ref") or col.get("logical_link")
             if ct == "foreign_key" and ref and "." in str(ref):

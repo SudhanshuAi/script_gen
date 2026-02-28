@@ -68,7 +68,16 @@ async def validate_yaml(request: Request):
             "summary": {"entity_count": 0, "column_count": 0},
         }
 
-    result = validate_schema(schema_dict)
+    try:
+        result = validate_schema(schema_dict)
+    except Exception as e:
+        return {
+            "valid": False,
+            "errors": [{"path": "(schema_validation)", "message": f"Unexpected validation error: {str(e)}. Please check your YAML structure."}],
+            "warnings": [],
+            "summary": {"entity_count": 0, "column_count": 0},
+        }
+
     return result
 
 
