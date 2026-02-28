@@ -153,6 +153,65 @@ async def generate_incremental(request: Request):
     )
     return {"job_id": job_id, "base_job_id": base_job_id, "incremental_rows": incremental_rows, "status": "pending"}
 
+
+@app.post("/generate-daily")
+async def generate_daily(request: Request):
+    """Generate data day-by-day for the next N days, appending to an existing job's output."""
+    try:
+        body_bytes = await request.body()
+        body_dict = json.loads(body_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    schema_str = body_dict.get("schema")
+    connection_string = body_dict.get("connection_string")
+    base_job_id = body_dict.get("base_job_id")
+    generate_days = body_dict.get("generate_days", 30)
+    rows_per_day = body_dict.get("rows_per_day", 10)
+
+    if not schema_str:
+        raise HTTPException(status_code=400, detail="Missing 'schema' in payload")
+    if not base_job_id:
+        raise HTTPException(status_code=400, detail="Missing 'base_job_id' in payload")
+    if not isinstance(generate_days, int) or generate_days < 0 or generate_days > 365:
+        raise HTTPException(status_code=400, detail="'generate_days' must be an integer between 0 and 365")
+    if not isinstance(rows_per_day, int) or rows_per_day < 1:
+        raise HTTPException(status_code=400, detail="'rows_per_day' must be an integer >= 1")
+
+    # Verify the base job exists and completed
+    base = get_job_result(base_job_id)
+    if base.get("error") == "Job not found":
+        raise HTTPException(status_code=404, detail="Base job not found")
+    if base.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="Base job has not completed yet")
+
+    try:
+        schema_dict = yaml.safe_load(schema_str)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {str(e)}")
+
+    if not isinstance(schema_dict, dict):
+        raise HTTPException(status_code=400, detail="YAML must parse to an object/dict")
+
+    try:
+        schema_dict = adapt_schema(schema_dict)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Schema adaptation error: {str(e)}")
+
+    job_id = start_job(
+        schema_dict, connection_string,
+        base_job_id=base_job_id,
+        generate_days=generate_days,
+        rows_per_day=rows_per_day,
+    )
+    return {
+        "job_id": job_id,
+        "base_job_id": base_job_id,
+        "generate_days": generate_days,
+        "rows_per_day": rows_per_day,
+        "status": "pending",
+    }
+
 @app.post("/test-connection")
 async def test_connection(request: Request):
     try:

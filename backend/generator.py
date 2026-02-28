@@ -99,7 +99,8 @@ def _fill_pattern(pattern: str) -> str:
 # ---------------------------------------------------------------------------
 class DataGenerator:
     def __init__(self, schema: Dict, output_dir: str = "output", connection_string: Optional[str] = None,
-                 incremental: bool = False, incremental_rows: int = 0):
+                 incremental: bool = False, incremental_rows: int = 0,
+                 generate_days: int = 0, rows_per_day: int = 10):
         import importlib, sys, os as _os
         _backend_dir = _os.path.dirname(_os.path.abspath(__file__))
         if _backend_dir not in sys.path:
@@ -110,12 +111,16 @@ class DataGenerator:
         self.output_dir = Path(output_dir)
         self.incremental = incremental
         self.incremental_rows = incremental_rows
+        self.generate_days = generate_days
+        self.rows_per_day = max(rows_per_day, 1)  # enforce minimum 1
         self.start_time = time.time()
         self.summary: Dict[str, Any] = {
             "run_timestamp": datetime.now(timezone.utc).isoformat(),
             "schema_version": schema.get("version", "unknown"),
             "incremental": incremental,
             "incremental_rows": incremental_rows if incremental else 0,
+            "generate_days": generate_days,
+            "rows_per_day": rows_per_day if generate_days >= 0 else 0,
             "database_tables": {},
             "files_generated": [],
             "api_dumps_generated": [],
@@ -138,10 +143,11 @@ class DataGenerator:
         if missing:
             raise ValueError(f"Schema is missing top-level keys: {missing}")
             
-    def _temporal_config(self) -> Tuple[datetime, datetime, Dict]:
+    def _temporal_config(self, override_start: Optional[datetime] = None,
+                         override_end: Optional[datetime] = None) -> Tuple[datetime, datetime, Dict]:
         t = self.schema["temporal"]
-        start = datetime.strptime(t["start_date"], "%Y-%m-%d")
-        end   = datetime.strptime(t["end_date"],   "%Y-%m-%d")
+        start = override_start or datetime.strptime(t["start_date"], "%Y-%m-%d")
+        end   = override_end   or datetime.strptime(t["end_date"],   "%Y-%m-%d")
         return start, end, t
 
     def _random_timestamps(self, n: int, start: datetime, end: datetime,
@@ -840,6 +846,10 @@ class DataGenerator:
         self.generate_files()
         self.generate_api_dump()
 
+        # ── Daily generation: loop day-by-day ──────────────────────────────
+        if self.generate_days >= 0:
+            self._run_daily_generation(fk_cache, global_mess)
+
         self.summary["execution_seconds"] = math.floor(float(time.time() - self.start_time) * 100) / 100.0
 
         out_path = self.output_dir / "summary.json"
@@ -848,3 +858,103 @@ class DataGenerator:
             json.dump(self.summary, f, indent=2, default=str)
 
         return self.summary
+
+    # ------------------------------------------------------------------
+    # Daily generation: produce data for each of the next N days
+    # ------------------------------------------------------------------
+    def _run_daily_generation(self, fk_cache: Dict[str, np.ndarray],
+                               global_mess: Dict) -> None:
+        """Generate rows for each of the next `self.generate_days` days.
+
+        Each day iteration:
+          1. Shifts the temporal window to [day_start, day_end)
+          2. Overrides row_count with self.rows_per_day
+          3. Generates entities & appends to DB (incremental mode)
+          4. Generates files & API dumps with incremental append
+        """
+        from copy import deepcopy
+
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        db_entities_cfg = self.schema.get("database", {}).get("entities", [])
+
+        # Save original values so we can restore after each day
+        orig_incremental = self.incremental
+        orig_temporal = deepcopy(self.schema["temporal"])
+        orig_row_counts: Dict[str, int] = {}
+        for entity in db_entities_cfg:
+            orig_row_counts[entity["name"]] = entity["row_count"]
+
+        orig_file_rows: Dict[str, int] = {}
+        for file_cfg in self.schema.get("file_sources", []):
+            orig_file_rows[file_cfg["name"]] = file_cfg["rows_per_file"]
+
+        orig_api_records: Dict[str, int] = {}
+        for api_cfg in self.schema.get("api_dumps", []):
+            orig_api_records[api_cfg["name"]] = api_cfg["total_records"]
+
+        print(f"\n{'='*60}")
+        print(f"  Daily generation: day 0 to {self.generate_days} × {self.rows_per_day} rows/day")
+        print(f"{'='*60}")
+
+        for day_offset in range(0, self.generate_days + 1):
+            day_start = today + timedelta(days=day_offset)
+            day_end   = day_start + timedelta(days=1)
+
+            print(f"\n  ── Day {day_offset}/{self.generate_days}: {day_start.strftime('%Y-%m-%d')} ──")
+
+            # Shift the temporal window to this specific day
+            self.schema["temporal"]["start_date"] = day_start.strftime("%Y-%m-%d")
+            self.schema["temporal"]["end_date"]   = day_end.strftime("%Y-%m-%d")
+
+            # Override row counts
+            for entity in db_entities_cfg:
+                entity["row_count"] = self.rows_per_day
+            for file_cfg in self.schema.get("file_sources", []):
+                file_cfg["rows_per_file"] = self.rows_per_day
+            for api_cfg in self.schema.get("api_dumps", []):
+                api_cfg["total_records"] = self.rows_per_day
+
+            # Force incremental mode for appending
+            self.incremental = True
+
+            # Re-sort entities (same order)
+            sorted_entities = self._topological_sort(db_entities_cfg)
+
+            # Generate each entity for this day
+            for entity_cfg in sorted_entities:
+                name = entity_cfg["name"]
+                df = self.generate_entity(entity_cfg, fk_cache, global_mess)
+                actual_rows = self.load_postgres(df, entity_cfg)
+
+                # Update fk_cache
+                pk_col = next((c["name"] for c in entity_cfg["columns"] if c.get("primary_key")), None)
+                self.build_fk_cache(name, df, pk_col, fk_cache)
+
+                # Accumulate in summary
+                if name in self.summary["database_tables"]:
+                    self.summary["database_tables"][name]["actual_rows"] += len(df)
+                else:
+                    self.summary["database_tables"][name] = {
+                        "target_rows": self.rows_per_day,
+                        "actual_rows": actual_rows if actual_rows > 0 else len(df),
+                    }
+                self.summary["total_records"] += len(df)
+                del df
+
+            # Generate files & API dumps for this day
+            self.generate_files()
+            self.generate_api_dump()
+
+        # Restore original values
+        self.incremental = orig_incremental
+        self.schema["temporal"] = orig_temporal
+        for entity in db_entities_cfg:
+            entity["row_count"] = orig_row_counts.get(entity["name"], entity["row_count"])
+        for file_cfg in self.schema.get("file_sources", []):
+            file_cfg["rows_per_file"] = orig_file_rows.get(file_cfg["name"], file_cfg["rows_per_file"])
+        for api_cfg in self.schema.get("api_dumps", []):
+            api_cfg["total_records"] = orig_api_records.get(api_cfg["name"], api_cfg["total_records"])
+
+        print(f"\n{'='*60}")
+        print(f"  Daily generation complete!")
+        print(f"{'='*60}\n")

@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import axios from 'axios';
 import CodeMirror from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
-import { Play, Loader2, Database, FileJson, FileText, Clock, AlertCircle, Settings, X, CheckCircle2, Download, Eraser, ShieldCheck, AlertTriangle, Info, ChevronDown, ChevronUp, Plus } from 'lucide-react';
+import { Play, Loader2, Database, FileJson, FileText, Clock, AlertCircle, Settings, X, CheckCircle2, Download, Eraser, ShieldCheck, AlertTriangle, Info, ChevronDown, ChevronUp, Plus, CalendarDays } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
@@ -64,8 +64,9 @@ export default function App() {
     const [isValidating, setIsValidating] = useState(false);
     const [showValidationDetails, setShowValidationDetails] = useState(true);
 
-    // Incremental Load State
-    const [incrementalRows, setIncrementalRows] = useState(10);
+    // Incremental Data Generation State
+    const [incrementDay, setIncrementDay] = useState<string>('0');
+    const [incrementRows, setIncrementRows] = useState(10);
 
     const pollStatus = useCallback(async (currentJobId: string) => {
         try {
@@ -180,9 +181,13 @@ export default function App() {
         }
     };
 
-    const handleIncrementalLoad = async () => {
-        if (!jobId || status !== 'completed') return;
+    const isIncrementDayValid = incrementDay !== '' && !isNaN(Number(incrementDay)) && Number(incrementDay) >= 0 && Number(incrementDay) <= 365 && Number.isInteger(Number(incrementDay));
+    const isIncrementReady = isIncrementDayValid && incrementRows >= 1;
+
+    const handleIncrementalGeneration = async () => {
+        if (!jobId || status !== 'completed' || !isIncrementReady) return;
         const baseId = jobId;
+        const dayValue = Number(incrementDay);
         try {
             setStatus('running');
             setError(null);
@@ -191,10 +196,11 @@ export default function App() {
                 schema: schemaText,
                 connection_string: connectionString || undefined,
                 base_job_id: baseId,
-                incremental_rows: incrementalRows,
+                generate_days: dayValue,
+                rows_per_day: incrementRows,
             };
 
-            const res = await axios.post(`${API_BASE}/generate-incremental`, payload, {
+            const res = await axios.post(`${API_BASE}/generate-daily`, payload, {
                 headers: { 'Content-Type': 'application/json' },
             });
             setJobId(res.data.job_id);
@@ -593,34 +599,55 @@ export default function App() {
                                             </div>
                                         </div>
 
-                                        {/* Incremental Load Section */}
-                                        <div className="p-5 bg-gradient-to-br from-amber-50 to-orange-50 rounded-xl border border-amber-200 shadow-sm">
-                                            <div className="flex items-center justify-between gap-4">
-                                                <div>
-                                                    <p className="text-sm font-semibold text-amber-700 uppercase tracking-wider mb-1">Incremental Load</p>
-                                                    <p className="text-xs text-amber-600">Append new rows to the existing data</p>
-                                                </div>
-                                                <div className="flex items-center gap-3">
-                                                    <div className="flex items-center gap-2">
-                                                        <label className="text-xs font-medium text-amber-700 whitespace-nowrap">Rows:</label>
-                                                        <input
-                                                            type="number"
-                                                            min={1}
-                                                            value={incrementalRows}
-                                                            onChange={(e) => setIncrementalRows(Math.max(1, parseInt(e.target.value) || 1))}
-                                                            className="w-20 px-2 py-1.5 text-sm border border-amber-300 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none bg-white text-center font-semibold"
-                                                        />
-                                                    </div>
-                                                    <button
-                                                        onClick={handleIncrementalLoad}
-                                                        disabled={isValidating}
-                                                        className="group inline-flex items-center px-4 py-2 text-sm font-bold text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm hover:shadow"
-                                                    >
-                                                        <Plus className="w-4 h-4 mr-1.5 group-hover:scale-110 transition-transform" />
-                                                        Add Data
-                                                    </button>
-                                                </div>
+                                        {/* Incremental Data Generation Section */}
+                                        <div className="p-5 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200 shadow-sm">
+                                            <div className="mb-3">
+                                                <p className="text-sm font-semibold text-blue-700 uppercase tracking-wider mb-1">Incremental Data</p>
+                                                <p className="text-xs text-blue-600">Generate rows for a specific day — 0 = today, 1 = tomorrow, up to 365</p>
                                             </div>
+                                            <div className="flex items-end gap-4 flex-wrap">
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-xs font-medium text-blue-700">Day (0–365)</label>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={365}
+                                                        value={incrementDay}
+                                                        onChange={(e) => setIncrementDay(e.target.value)}
+                                                        placeholder="0"
+                                                        className={`w-24 px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none bg-white text-center font-semibold transition-colors ${incrementDay !== '' && !isIncrementDayValid
+                                                                ? 'border-red-400 bg-red-50'
+                                                                : 'border-blue-300'
+                                                            }`}
+                                                    />
+                                                    {incrementDay !== '' && !isIncrementDayValid && (
+                                                        <span className="text-[10px] text-red-500">0–365 only</span>
+                                                    )}
+                                                </div>
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-xs font-medium text-blue-700">Rows</label>
+                                                    <input
+                                                        type="number"
+                                                        min={1}
+                                                        value={incrementRows}
+                                                        onChange={(e) => setIncrementRows(Math.max(1, parseInt(e.target.value) || 1))}
+                                                        className="w-24 px-3 py-2 text-sm border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none bg-white text-center font-semibold"
+                                                    />
+                                                </div>
+                                                <button
+                                                    onClick={handleIncrementalGeneration}
+                                                    disabled={isValidating || !isIncrementReady}
+                                                    className="group inline-flex items-center px-5 py-2 text-sm font-bold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm hover:shadow"
+                                                >
+                                                    <CalendarDays className="w-4 h-4 mr-1.5 group-hover:scale-110 transition-transform" />
+                                                    Generate
+                                                </button>
+                                            </div>
+                                            {isIncrementReady && (
+                                                <div className="mt-3 text-xs text-blue-500 bg-blue-100/50 rounded-lg px-3 py-2">
+                                                    Will generate <strong>{incrementRows.toLocaleString()}</strong> rows per entity for <strong>{Number(incrementDay) === 0 ? 'today' : `day ${incrementDay}`}</strong>
+                                                </div>
+                                            )}
                                         </div>
 
                                         {Object.keys(result.database_tables || {}).length > 0 && (

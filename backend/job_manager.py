@@ -10,17 +10,20 @@ from typing import Optional
 
 def run_job_sync(job_id: str, schema: dict, connection_string: Optional[str] = None,
                  incremental: bool = False, incremental_rows: int = 0,
-                 base_job_id: Optional[str] = None):
+                 base_job_id: Optional[str] = None,
+                 generate_days: int = -1, rows_per_day: int = 10):
     try:
         jobs[job_id]["status"] = "running"
-        # In incremental mode, reuse the base job's output directory
-        output_dir = f"output_{base_job_id}" if incremental and base_job_id else f"output_{job_id}"
+        # In incremental / daily mode, reuse the base job's output directory
+        output_dir = f"output_{base_job_id}" if base_job_id else f"output_{job_id}"
         generator = DataGenerator(
             schema=schema,
             output_dir=output_dir,
             connection_string=connection_string,
             incremental=incremental,
             incremental_rows=incremental_rows,
+            generate_days=generate_days,
+            rows_per_day=rows_per_day,
         )
         summary = generator.run()
         jobs[job_id]["status"] = "completed"
@@ -35,7 +38,8 @@ def run_job_sync(job_id: str, schema: dict, connection_string: Optional[str] = N
 
 def start_job(schema: dict, connection_string: Optional[str] = None,
               incremental: bool = False, incremental_rows: int = 0,
-              base_job_id: Optional[str] = None) -> str:
+              base_job_id: Optional[str] = None,
+              generate_days: int = -1, rows_per_day: int = 10) -> str:
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"status": "pending", "result": None, "error": None}
     
@@ -44,6 +48,7 @@ def start_job(schema: dict, connection_string: Optional[str] = None,
     loop.run_in_executor(
         executor, run_job_sync, job_id, schema, connection_string,
         incremental, incremental_rows, base_job_id,
+        generate_days, rows_per_day,
     )
     
     return job_id
