@@ -897,7 +897,7 @@ class DataGenerator:
         print(f"  Day-specific generation: day {self.generate_days} × {self.rows_per_day} rows")
         print(f"{'='*60}")
 
-        for day_offset in [self.generate_days]:
+        for day_offset in range(1, self.generate_days + 1):
             day_start = today + timedelta(days=day_offset)
             day_end   = day_start + timedelta(days=1)
 
@@ -912,6 +912,7 @@ class DataGenerator:
                 entity["row_count"] = self.rows_per_day
             for file_cfg in self.schema.get("file_sources", []):
                 file_cfg["rows_per_file"] = self.rows_per_day
+                file_cfg["num_files"] = 1
             for api_cfg in self.schema.get("api_dumps", []):
                 api_cfg["total_records"] = self.rows_per_day
 
@@ -953,6 +954,8 @@ class DataGenerator:
             entity["row_count"] = orig_row_counts.get(entity["name"], entity["row_count"])
         for file_cfg in self.schema.get("file_sources", []):
             file_cfg["rows_per_file"] = orig_file_rows.get(file_cfg["name"], file_cfg["rows_per_file"])
+            if "num_files" in file_cfg:
+                file_cfg["num_files"] = self.schema.get("file_sources", [])[0].get("num_files", file_cfg["num_files"]) # restore is hacky, but realistically we only need this for the current run
         for api_cfg in self.schema.get("api_dumps", []):
             api_cfg["total_records"] = orig_api_records.get(api_cfg["name"], api_cfg["total_records"])
 

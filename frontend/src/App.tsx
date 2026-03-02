@@ -65,7 +65,7 @@ export default function App() {
     const [showValidationDetails, setShowValidationDetails] = useState(true);
 
     // Incremental Data Generation State
-    const [incrementDay, setIncrementDay] = useState<string>('0');
+    const [incrementTargetDate, setIncrementTargetDate] = useState<string>('');
     const [incrementRows, setIncrementRows] = useState(10);
 
     const pollStatus = useCallback(async (currentJobId: string) => {
@@ -181,13 +181,24 @@ export default function App() {
         }
     };
 
-    const isIncrementDayValid = incrementDay !== '' && !isNaN(Number(incrementDay)) && Number(incrementDay) >= 0 && Number(incrementDay) <= 365 && Number.isInteger(Number(incrementDay));
-    const isIncrementReady = isIncrementDayValid && incrementRows >= 1;
+    const getDaysDifference = () => {
+        if (!incrementTargetDate) return -1;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const target = new Date(incrementTargetDate);
+        target.setHours(0, 0, 0, 0);
+        const diffTime = target.getTime() - today.getTime();
+        return Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    };
+
+    const daysDiff = getDaysDifference();
+    const isIncrementTargetDateValid = incrementTargetDate !== '' && daysDiff >= 1 && daysDiff <= 365;
+    const isIncrementReady = isIncrementTargetDateValid && incrementRows >= 1;
 
     const handleIncrementalGeneration = async () => {
         if (!jobId || status !== 'completed' || !isIncrementReady) return;
         const baseId = jobId;
-        const dayValue = Number(incrementDay);
+        const dayValue = daysDiff;
         try {
             setStatus('running');
             setError(null);
@@ -603,29 +614,27 @@ export default function App() {
                                         <div className="p-5 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200 shadow-sm">
                                             <div className="mb-3">
                                                 <p className="text-sm font-semibold text-blue-700 uppercase tracking-wider mb-1">Incremental Data</p>
-                                                <p className="text-xs text-blue-600">Generate rows for a specific day — 0 = today, 1 = tomorrow, up to 365</p>
+                                                <p className="text-xs text-blue-600">Generate rows from tomorrow up to the selected date (max +365 days)</p>
                                             </div>
                                             <div className="flex items-end gap-4 flex-wrap">
                                                 <div className="flex flex-col gap-1">
-                                                    <label className="text-xs font-medium text-blue-700">Day (0–365)</label>
+                                                    <label className="text-xs font-medium text-blue-700">Target Date</label>
                                                     <input
-                                                        type="number"
-                                                        min={0}
-                                                        max={365}
-                                                        value={incrementDay}
-                                                        onChange={(e) => setIncrementDay(e.target.value)}
-                                                        placeholder="0"
-                                                        className={`w-24 px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none bg-white text-center font-semibold transition-colors ${incrementDay !== '' && !isIncrementDayValid
+                                                        type="date"
+                                                        value={incrementTargetDate}
+                                                        onChange={(e) => setIncrementTargetDate(e.target.value)}
+                                                        min={new Date(Date.now() + 86400000).toISOString().split('T')[0]}
+                                                        className={`px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none bg-white font-semibold transition-colors ${incrementTargetDate !== '' && !isIncrementTargetDateValid
                                                             ? 'border-red-400 bg-red-50'
                                                             : 'border-blue-300'
                                                             }`}
                                                     />
-                                                    {incrementDay !== '' && !isIncrementDayValid && (
-                                                        <span className="text-[10px] text-red-500">0–365 only</span>
+                                                    {incrementTargetDate !== '' && !isIncrementTargetDateValid && (
+                                                        <span className="text-[10px] text-red-500">Invalid future date</span>
                                                     )}
                                                 </div>
                                                 <div className="flex flex-col gap-1">
-                                                    <label className="text-xs font-medium text-blue-700">Rows</label>
+                                                    <label className="text-xs font-medium text-blue-700">Rows Per Day</label>
                                                     <input
                                                         type="number"
                                                         min={1}
@@ -645,7 +654,7 @@ export default function App() {
                                             </div>
                                             {isIncrementReady && (
                                                 <div className="mt-3 text-xs text-blue-500 bg-blue-100/50 rounded-lg px-3 py-2">
-                                                    Will generate <strong>{incrementRows.toLocaleString()}</strong> rows per entity specifically for <strong>{Number(incrementDay) === 0 ? 'today' : `day ${incrementDay}`}</strong>
+                                                    Will generate <strong>{incrementRows.toLocaleString()}</strong> rows per day for <strong>{daysDiff}</strong> days ({(daysDiff * incrementRows).toLocaleString()} total rows per entity), from tomorrow to {incrementTargetDate}
                                                 </div>
                                             )}
                                         </div>
