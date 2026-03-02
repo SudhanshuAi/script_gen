@@ -132,6 +132,11 @@ class DataGenerator:
         np.random.seed(42)
         random.seed(42)
         
+        # Override the schema's temporal config to ALWAYS rely on the latest date (today) by default
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        schema["temporal"]["start_date"] = today.strftime("%Y-%m-%d")
+        schema["temporal"]["end_date"] = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        
         # Let's make api_dumps and file_sources optional by providing default empty lists if missing.
         if "api_dumps" not in self.schema:
             self.schema["api_dumps"] = []
@@ -154,6 +159,10 @@ class DataGenerator:
                             temporal_cfg: Dict,
                             intro_offset_days: int = 0,
                             pattern: str = "") -> np.ndarray:
+        # Force UTC to prevent local timezone shifts when converting to/from POSIX timestamp
+        start = start.replace(tzinfo=timezone.utc)
+        end = end.replace(tzinfo=timezone.utc)
+        
         range_start = start + timedelta(days=intro_offset_days)
         total_secs  = max(int((end - range_start).total_seconds()), 1)
 
@@ -702,7 +711,7 @@ class DataGenerator:
             n_pages     = max(1, math.ceil(total / page_size))
 
             for page in range(1, n_pages + 1):
-                page_records = all_records[(page - 1) * page_size : page * page_size]
+                page_records = all_records[(page - 1) * page_size : page * page_size] # type: ignore
                 payload = {
                     "api":           name,
                     "page":          page,
@@ -805,7 +814,7 @@ class DataGenerator:
             return name, entity_cfg, df, actual_rows, target_rows
 
         # ── Daily generation ───────────────────────────────────────────────
-        if self.generate_days >= 0:
+        if self.generate_days > 0:
             self._run_daily_generation(fk_cache, global_mess)
         else:
             # ── Normal Generation ──────────────────────────────────────────────
