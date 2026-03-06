@@ -427,39 +427,58 @@ class DataGenerator:
 
         return f'CREATE TABLE IF NOT EXISTS "{table}" (\n' + ",\n".join(cols) + "\n);"
 
+    def _get_or_create_shared_conn(self):
+        """Return a shared psycopg2 connection for the lifetime of this run.
+        Re-opens it if it has been closed or errored.
+        """
+        if not PSYCOPG2_AVAILABLE:
+            return None
+        conn = getattr(self, "_shared_pg_conn", None)
+        if conn is None or conn.closed:
+            conn = psycopg2.connect(**self.pg_conn_params)
+            # Session-level bulk-load optimisations (set once per connection)
+            cur = conn.cursor()
+            cur.execute("SET synchronous_commit = off;")
+            cur.execute("SET work_mem = '256MB';")
+            conn.commit()
+            cur.close()
+            self._shared_pg_conn = conn
+        return conn
+
+    def _close_shared_conn(self):
+        conn = getattr(self, "_shared_pg_conn", None)
+        if conn and not conn.closed:
+            conn.close()
+        self._shared_pg_conn = None
+
     def load_postgres(self, df: pd.DataFrame, entity_cfg: Dict) -> int:
         """Bulk-load a DataFrame into Postgres using COPY.
-        
-        Optimisations applied per session:
-          • synchronous_commit = off  – skip WAL disk flush (safe for bulk loads)
-          • checkpoint_completion_target hint via work_mem
-        For large tables the DataFrame is streamed in 200 k-row chunks so we
-        never build a multi-GB in-memory CSV string.
-        
-        In incremental mode, the table is assumed to already exist and rows
-        are appended without re-creating the table.
+
+        Uses a shared connection per run (Fix 2) to avoid a new TCP/TLS
+        handshake for every entity. Streams large DataFrames in 200k-row
+        chunks so we never build a multi-GB in-memory CSV string.
+
+        In incremental mode the table is assumed to already exist and rows
+        are simply appended.
         """
         if not PSYCOPG2_AVAILABLE:
             return 0
 
-        CHUNK_ROWS = 200_000          # rows per COPY command
+        CHUNK_ROWS = 200_000
         table = entity_cfg["name"]
         try:
-            conn = psycopg2.connect(**self.pg_conn_params)
-            cur  = conn.cursor()
+            conn = self._get_or_create_shared_conn()
+            if conn is None:
+                return 0
+            cur = conn.cursor()
 
-            # ── session-level bulk-load optimisations ──────────────────────
-            cur.execute("SET synchronous_commit = off;")
-            cur.execute("SET work_mem = '256MB';")
-            conn.commit()
-
-            # ── create table ───────────────────
+            # ── create table ──────────────────────────────────────────────
             create_sql = self._build_create_table_sql(entity_cfg)
             cur.execute(create_sql)
             conn.commit()
 
             cols        = list(df.columns)
-            quoted_cols = [f'"{ c}"' for c in cols]
+            quoted_cols = [f'"{c}"' for c in cols]
             cols_str    = ", ".join(quoted_cols)
             copy_sql    = f'COPY "{table}" ({cols_str}) FROM STDIN WITH CSV NULL AS \'\\N\''
 
@@ -479,12 +498,13 @@ class DataGenerator:
             db_count: int = int(row[0]) if row else 0
 
             cur.close()
-            conn.close()
             mode_label = "appended (incremental)" if self.incremental else "loaded"
             print(f"  ✓ {table}: {db_count:,} rows {mode_label}")
             return db_count
         except Exception as e:
             print(f"PostgreSQL load failed for '{table}': {e}")
+            # Force re-open next time
+            self._shared_pg_conn = None
             return 0
 
     def _get_date_sequence(self, n_files: int, frequency: str) -> List[datetime]:
@@ -856,60 +876,66 @@ class DataGenerator:
             actual_rows = self.load_postgres(df, entity_cfg)
             return name, entity_cfg, df, actual_rows, target_rows
 
-        # ── Date Range Generation ───────────────────────────────────────────────
-        schema_start = self.schema.get("temporal", {}).get("start_date")
-        schema_end = self.schema.get("temporal", {}).get("end_date")
-        
-        has_explicit = bool(self.target_date_start and self.target_date_end)
-        use_start = self.target_date_start if has_explicit else schema_start
-        use_end = self.target_date_end if has_explicit else schema_end
-        override_rows = self.rows_per_day if has_explicit else None
-
-        if use_start and use_end and use_start <= use_end:
-            self._run_date_range_generation(fk_cache, global_mess, use_start, use_end, override_rows)
+        # ── Routing: date-range vs normal generation ───────────────────────────
+        # FIX 1: Only enter the day-by-day loop when the user explicitly requested
+        # incremental/daily generation via target_date_start + target_date_end.
+        # Previously, any schema with a non-empty temporal block (which is every
+        # schema) fell into this loop, causing 300+ iteration runs on "Mock Me".
+        if self.target_date_start and self.target_date_end:
+            try:
+                self._run_date_range_generation(
+                    fk_cache, global_mess,
+                    self.target_date_start, self.target_date_end,
+                    self.rows_per_day,
+                )
+            finally:
+                self._close_shared_conn()
         else:
-            # ── Normal Generation ──────────────────────────────────────────────
-            while remaining:
-                # Pick all entities whose deps are satisfied
-                wave = [e for e in remaining if _deps(e).issubset(done_names)]
-                if not wave:
-                    # Circular dep or something unexpected – fall back to sequential
-                    wave = [remaining[0]]
+            # ── Normal single-pass generation ──────────────────────────────────
+            try:
+                while remaining:
+                    # Pick all entities whose deps are satisfied
+                    wave = [e for e in remaining if _deps(e).issubset(done_names)]
+                    if not wave:
+                        # Circular dep or something unexpected – fall back to sequential
+                        wave = [remaining[0]]
 
-                for e in wave:
-                    remaining.remove(e)
+                    for e in wave:
+                        remaining.remove(e)
 
-                if len(wave) == 1:
-                    # No parallelism needed for a single entity
-                    name, entity_cfg, df, actual_rows, target_rows = _process_entity(wave[0])
-                    pk_col = next((c["name"] for c in entity_cfg["columns"] if c.get("primary_key")), None)
-                    self.build_fk_cache(name, df, pk_col, fk_cache, max_cache=fk_max_cache)
-                    self.summary["database_tables"][name] = {
-                        "target_rows": target_rows,
-                        "actual_rows": actual_rows if actual_rows > 0 else len(df),
-                    }
-                    self.summary["total_records"] += len(df)
-                    done_names.add(name)
-                    del df
-                else:
-                    # Parallel wave
-                    max_workers = min(len(wave), 4)   # cap at 4 concurrent DB conns
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        futures = {pool.submit(_process_entity, e): e for e in wave}  # type: ignore[arg-type]
-                        for fut in as_completed(futures):
-                            name, entity_cfg, df, actual_rows, target_rows = fut.result()
-                            pk_col = next((c["name"] for c in entity_cfg["columns"] if c.get("primary_key")), None)
-                            self.build_fk_cache(name, df, pk_col, fk_cache, max_cache=fk_max_cache)
-                            self.summary["database_tables"][name] = {
-                                "target_rows": target_rows,
-                                "actual_rows": actual_rows if actual_rows > 0 else len(df),
-                            }
-                            self.summary["total_records"] += len(df)
-                            done_names.add(name)
-                            del df
+                    if len(wave) == 1:
+                        # No parallelism needed for a single entity
+                        name, entity_cfg, df, actual_rows, target_rows = _process_entity(wave[0])
+                        pk_col = next((c["name"] for c in entity_cfg["columns"] if c.get("primary_key")), None)
+                        self.build_fk_cache(name, df, pk_col, fk_cache, max_cache=fk_max_cache)
+                        self.summary["database_tables"][name] = {
+                            "target_rows": target_rows,
+                            "actual_rows": actual_rows if actual_rows > 0 else len(df),
+                        }
+                        self.summary["total_records"] += len(df)
+                        done_names.add(name)
+                        del df
+                    else:
+                        # Parallel wave
+                        max_workers = min(len(wave), 4)   # cap at 4 concurrent DB conns
+                        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                            futures = {pool.submit(_process_entity, e): e for e in wave}  # type: ignore[arg-type]
+                            for fut in as_completed(futures):
+                                name, entity_cfg, df, actual_rows, target_rows = fut.result()
+                                pk_col = next((c["name"] for c in entity_cfg["columns"] if c.get("primary_key")), None)
+                                self.build_fk_cache(name, df, pk_col, fk_cache, max_cache=fk_max_cache)
+                                self.summary["database_tables"][name] = {
+                                    "target_rows": target_rows,
+                                    "actual_rows": actual_rows if actual_rows > 0 else len(df),
+                                }
+                                self.summary["total_records"] += len(df)
+                                done_names.add(name)
+                                del df
 
-            self.generate_files()
-            self.generate_api_dump()
+                self.generate_files()
+                self.generate_api_dump()
+            finally:
+                self._close_shared_conn()
 
         self.summary["execution_seconds"] = math.floor(float(time.time() - self.start_time) * 100) / 100.0
 
@@ -1004,7 +1030,7 @@ class DataGenerator:
 
                 # Accumulate in summary
                 if name in self.summary["database_tables"]:
-                    self.summary["database_tables"][name]["actual_rows"] += len(df)
+                    self.summary["database_tables"][name]["actual_rows"] += (actual_rows if actual_rows > 0 else len(df))
                 else:
                     self.summary["database_tables"][name] = {
                         "target_rows": override_rows if override_rows is not None else orig_row_counts.get(name, 0),

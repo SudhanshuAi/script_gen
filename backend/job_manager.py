@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from generator import DataGenerator
 
 jobs = {}
-executor = ThreadPoolExecutor(max_workers=2)
+executor = ThreadPoolExecutor(max_workers=4)
 
 from typing import Optional
 
