@@ -1061,7 +1061,10 @@ class DataGenerator:
 
                 # Accumulate in summary
                 if name in self.summary["database_tables"]:
-                    self.summary["database_tables"][name]["actual_rows"] += (actual_rows if actual_rows > 0 else len(df))
+                    if actual_rows > 0:
+                        self.summary["database_tables"][name]["actual_rows"] = actual_rows
+                    else:
+                        self.summary["database_tables"][name]["actual_rows"] += len(df)
                 else:
                     self.summary["database_tables"][name] = {
                         "target_rows": override_rows if override_rows is not None else orig_row_counts.get(name, 0),
