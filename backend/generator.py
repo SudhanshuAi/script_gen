@@ -102,7 +102,7 @@ class DataGenerator:
     def __init__(self, schema: Dict, output_dir: str = "output", connection_string: Optional[str] = None,
                  incremental: bool = False, incremental_rows: int = 0,
                  target_date_start: Optional[str] = None, target_date_end: Optional[str] = None,
-                 rows_per_day: int = 10):
+                 rows_per_day: int = 10, generate_days: Optional[int] = None):
         import importlib, sys, os as _os
         _backend_dir = _os.path.dirname(_os.path.abspath(__file__))
         if _backend_dir not in sys.path:
@@ -115,7 +115,18 @@ class DataGenerator:
         self.incremental_rows = incremental_rows
         self.target_date_start = target_date_start
         self.target_date_end = target_date_end
+        self.generate_days = generate_days
         self.rows_per_day = max(rows_per_day, 1)  # enforce minimum 1
+        
+        if self.generate_days and not self.target_date_end:
+            start_str = self.target_date_start or schema.get("temporal", {}).get("start_date")
+            if not start_str:
+                start_str = datetime.now().strftime("%Y-%m-%d")
+                self.target_date_start = start_str
+            
+            start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+            self.target_date_end = (start_dt + timedelta(days=self.generate_days - 1)).strftime("%Y-%m-%d")
+
         self.start_time = time.time()
         self.summary: Dict[str, Any] = {
             "run_timestamp": datetime.now(timezone.utc).isoformat(),
@@ -210,6 +221,7 @@ class DataGenerator:
                         intro_offset_days: int = 0,
                         orphaned_fk_pct: float = 0.0) -> pd.Series:
         ct = col_def["type"].lower()
+        is_pk = col_def.get("primary_key", False)
 
         if ct == "foreign_key":
             ref_entity, ref_col = col_def["ref"].split(".")
