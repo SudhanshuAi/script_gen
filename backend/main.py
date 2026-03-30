@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from job_manager import start_job, get_job_status, get_job_result
 from schema_adapter import adapt_schema
 from schema_validator import validate_schema
+from scheduler import data_scheduler
 
 BACKEND_DIR = Path(__file__).parent.resolve()
 
@@ -326,6 +327,71 @@ async def download_file(job_id: str = Query(...), path: str = Query(...)):
         filename=target.name,
         headers={"Content-Disposition": f'attachment; filename="{target.name}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Scheduling Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/schedules")
+async def create_schedule(request: Request):
+    """Create a new data generation schedule."""
+    try:
+        body_bytes = await request.body()
+        body_dict = json.loads(body_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    schema_str = body_dict.get("schema")
+    connection_string = body_dict.get("connection_string")
+    interval_hours = body_dict.get("interval_hours", 1.0)
+    rows_per_run = body_dict.get("rows_per_run", 10)
+    base_job_id = body_dict.get("base_job_id")
+
+    temporal_mode = body_dict.get("temporal_mode", "fixed")
+
+    if not schema_str:
+        raise HTTPException(status_code=400, detail="Missing 'schema' in payload")
+    if not base_job_id:
+        raise HTTPException(status_code=400, detail="Missing 'base_job_id' in payload")
+
+    try:
+        schema_dict = yaml.safe_load(schema_str)
+        schema_dict = adapt_schema(schema_dict)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Schema error: {str(e)}")
+
+    schedule = data_scheduler.add_schedule(
+        schema=schema_dict,
+        connection_string=connection_string,
+        interval_hours=float(interval_hours),
+        rows_per_run=int(rows_per_run),
+        base_job_id=base_job_id,
+        temporal_mode=temporal_mode
+    )
+    return schedule
+
+@app.get("/schedules")
+async def list_schedules():
+    """List all active schedules."""
+    return data_scheduler.get_all_schedules()
+
+@app.delete("/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: str):
+    """Delete a schedule."""
+    success = data_scheduler.remove_schedule(schedule_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"status": "deleted"}
+
+@app.post("/schedules/{schedule_id}/run-now")
+async def run_schedule_now(schedule_id: str):
+    """Trigger a schedule run immediately."""
+    success = data_scheduler.trigger_now(schedule_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"status": "triggered"}
+
 
 
 # ---------------------------------------------------------------------------

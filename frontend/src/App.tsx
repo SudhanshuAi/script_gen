@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import axios from 'axios';
 import CodeMirror from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
-import { Play, Loader2, Database, FileJson, FileText, Clock, AlertCircle, Settings, X, CheckCircle2, Download, Eraser, ShieldCheck, AlertTriangle, Info, ChevronDown, ChevronUp, CalendarDays } from 'lucide-react';
+import { Play, Loader2, Database, FileJson, FileText, Clock, AlertCircle, Settings, X, CheckCircle2, Download, Eraser, ShieldCheck, AlertTriangle, Info, ChevronDown, ChevronUp, CalendarDays, Trash2, RefreshCw, Plus, History } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
@@ -64,10 +64,17 @@ export default function App() {
     const [isValidating, setIsValidating] = useState(false);
     const [showValidationDetails, setShowValidationDetails] = useState(true);
 
-    // Incremental Data Generation State
     const [targetDateStart, setTargetDateStart] = useState<string>('');
     const [targetDateEnd, setTargetDateEnd] = useState<string>('');
     const [incrementRows, setIncrementRows] = useState(10);
+
+    // Scheduling State
+    const [activeTab, setActiveTab] = useState<'generation' | 'schedules'>('generation');
+    const [schedules, setSchedules] = useState<any[]>([]);
+    const [isCreatingSchedule, setIsCreatingSchedule] = useState(false);
+    const [scheduleInterval, setScheduleInterval] = useState(3);
+    const [scheduleRows, setScheduleRows] = useState(100);
+    const [scheduleTemporalMode, setScheduleTemporalMode] = useState<'fixed' | 'rolling'>('fixed');
 
     const pollStatus = useCallback(async (currentJobId: string) => {
         try {
@@ -88,6 +95,25 @@ export default function App() {
             setStatus('failed');
         }
     }, []);
+
+    const fetchSchedules = useCallback(async () => {
+        try {
+            const res = await axios.get(`${API_BASE}/schedules`);
+            setSchedules(res.data);
+        } catch (err: any) {
+            console.error("Failed to fetch schedules", err);
+        }
+    }, []);
+
+    useState(() => {
+        fetchSchedules();
+    });
+
+    // Refresh schedules every 10s
+    useState(() => {
+        const interval = setInterval(fetchSchedules, 10000);
+        return () => clearInterval(interval);
+    });
 
     const handleTestConnection = async () => {
         if (!connectionString) return;
@@ -233,6 +259,47 @@ export default function App() {
         // Clear stale validation results when schema changes
         if (validationResult) {
             setValidationResult(null);
+        }
+    };
+
+    const handleCreateSchedule = async () => {
+        if (!jobId) return;
+        try {
+            setIsCreatingSchedule(true);
+            const payload = {
+                schema: schemaText,
+                connection_string: connectionString || undefined,
+                base_job_id: jobId,
+                interval_hours: scheduleInterval,
+                rows_per_run: scheduleRows,
+                temporal_mode: scheduleTemporalMode
+            };
+            await axios.post(`${API_BASE}/schedules`, payload);
+            await fetchSchedules();
+            setActiveTab('schedules');
+        } catch (err: any) {
+            setError(err.response?.data?.detail || err.message);
+        } finally {
+            setIsCreatingSchedule(false);
+        }
+    };
+
+    const handleDeleteSchedule = async (sid: string) => {
+        try {
+            await axios.delete(`${API_BASE}/schedules/${sid}`);
+            await fetchSchedules();
+        } catch (err: any) {
+            setError(err.response?.data?.detail || err.message);
+        }
+    };
+
+    const handleRunScheduleNow = async (sid: string) => {
+        try {
+            await axios.post(`${API_BASE}/schedules/${sid}/run-now`);
+            // Immediate refresh
+            setTimeout(fetchSchedules, 1000);
+        } catch (err: any) {
+            setError(err.response?.data?.detail || err.message);
         }
     };
 
@@ -542,12 +609,40 @@ export default function App() {
                     </section>
 
                     <section className="flex flex-col h-[700px]">
-                        <h2 className="text-xl font-bold mb-4 flex items-center text-slate-800">
-                            <Database className="w-5 h-5 mr-2 text-emerald-500" />
-                            Generation Results
-                        </h2>
+                        <div className="flex items-center gap-4 mb-4 border-b border-slate-200">
+                            <button
+                                onClick={() => setActiveTab('generation')}
+                                className={`pb-3 px-2 text-sm font-bold transition-all border-b-2 flex items-center gap-2 ${activeTab === 'generation' ? 'text-violet-600 border-violet-600' : 'text-slate-400 border-transparent hover:text-slate-600'
+                                    }`}
+                            >
+                                <Play className="w-4 h-4" />
+                                Interactive Generation
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('schedules')}
+                                className={`pb-3 px-2 text-sm font-bold transition-all border-b-2 flex items-center gap-2 ${activeTab === 'schedules' ? 'text-violet-600 border-violet-600' : 'text-slate-400 border-transparent hover:text-slate-600'
+                                    }`}
+                            >
+                                <Clock className="w-4 h-4" />
+                                Data Schedules
+                                {schedules.length > 0 && (
+                                    <span className="bg-violet-100 text-violet-600 text-[10px] px-1.5 py-0.5 rounded-full">
+                                        {schedules.length}
+                                    </span>
+                                )}
+                            </button>
+                        </div>
+
                         <div className="flex-1 overflow-y-auto rounded-2xl border border-slate-200 shadow-sm bg-white p-6">
-                            <AnimatePresence mode="popLayout">
+                            <AnimatePresence mode="wait">
+                                {activeTab === 'generation' ? (
+                                    <motion.div
+                                        key="generation-tab"
+                                        initial={{ opacity: 0, x: -10 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        exit={{ opacity: 0, x: 10 }}
+                                        className="h-full"
+                                    >
                                 {status === 'idle' && (
                                     <motion.div
                                         initial={{ opacity: 0 }}
@@ -760,6 +855,204 @@ export default function App() {
                                                 </div>
                                             </div>
                                         )}
+                                    </motion.div>
+                                )}
+                            </motion.div>
+                        ) : (
+                                    /* ── SCHEDULES TAB ── */
+                                    <motion.div
+                                        key="schedules-tab"
+                                        initial={{ opacity: 0, x: 10 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        exit={{ opacity: 0, x: -10 }}
+                                        className="space-y-6"
+                                    >
+                                        {jobId && status === 'completed' && (
+                                            <div className="p-5 bg-gradient-to-br from-violet-50 to-indigo-50 rounded-2xl border border-violet-200 shadow-sm">
+                                                <div className="flex items-center justify-between mb-4">
+                                                    <div>
+                                                        <h3 className="font-bold text-violet-900 flex items-center">
+                                                            <Plus className="w-5 h-5 mr-2" />
+                                                            Create New Schedule
+                                                        </h3>
+                                                        <p className="text-xs text-violet-600 mt-0.5">Automate incremental runs for this connection</p>
+                                                    </div>
+                                                </div>
+                                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-violet-700 mb-1">Interval (Hours)</label>
+                                                        <select
+                                                            value={scheduleInterval}
+                                                            onChange={(e) => setScheduleInterval(parseFloat(e.target.value))}
+                                                            className="w-full px-3 py-2 bg-white border border-violet-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-violet-400"
+                                                        >
+                                                            <option value={0.5}>Every 30 Mins</option>
+                                                            <option value={1}>Every 1 Hour</option>
+                                                            <option value={3}>Every 3 Hours</option>
+                                                            <option value={6}>Every 6 Hours</option>
+                                                            <option value={12}>Every 12 Hours</option>
+                                                            <option value={24}>Every 24 Hours</option>
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-violet-700 mb-1">Rows Per Run</label>
+                                                        <input
+                                                            type="number"
+                                                            value={scheduleRows}
+                                                            onChange={(e) => setScheduleRows(parseInt(e.target.value) || 10)}
+                                                            className="w-full px-3 py-2 bg-white border border-violet-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-violet-400 font-bold"
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-violet-700 mb-1">Temporal Logic</label>
+                                                        <div className="flex bg-white p-1 border border-violet-100 rounded-xl">
+                                                            <button
+                                                                onClick={() => setScheduleTemporalMode('fixed')}
+                                                                className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-lg transition-all ${scheduleTemporalMode === 'fixed'
+                                                                    ? 'bg-violet-600 text-white shadow-sm'
+                                                                    : 'text-violet-400 hover:text-violet-600'
+                                                                    }`}
+                                                            >
+                                                                Fixed (Schema)
+                                                            </button>
+                                                            <button
+                                                                onClick={() => setScheduleTemporalMode('rolling')}
+                                                                className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-lg transition-all ${scheduleTemporalMode === 'rolling'
+                                                                    ? 'bg-violet-600 text-white shadow-sm'
+                                                                    : 'text-violet-400 hover:text-violet-600'
+                                                                    }`}
+                                                            >
+                                                                Live (Rolling)
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-end">
+                                                        <button
+                                                            onClick={handleCreateSchedule}
+                                                            disabled={isCreatingSchedule}
+                                                            className="w-full py-2.5 bg-violet-600 text-white rounded-lg font-bold text-sm hover:bg-violet-700 transition-colors shadow-md disabled:opacity-50"
+                                                        >
+                                                            {isCreatingSchedule ? 'Creating...' : 'Start Automation'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div className="text-[10px] text-violet-400 flex items-center gap-1.5">
+                                                    <Info className="w-3 h-3" />
+                                                    Uses current YAML schema and connection settings.
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="space-y-4">
+                                            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider flex items-center">
+                                                Active Automations
+                                                <span className="ml-2 px-2 py-0.5 bg-slate-100 rounded text-slate-400 text-[10px]">{schedules.length}</span>
+                                            </h3>
+
+                                            {schedules.length === 0 ? (
+                                                <div className="py-20 flex flex-col items-center justify-center text-slate-300">
+                                                    <Clock className="w-12 h-12 mb-4 opacity-20" />
+                                                    <p>No active schedules found.</p>
+                                                    <p className="text-xs mt-1">Run a successful job first to create an automation.</p>
+                                                </div>
+                                            ) : (
+                                                schedules.map((s) => (
+                                                    <div key={s.schedule_id} className="group bg-white rounded-2xl border border-slate-200 hover:border-violet-200 transition-all shadow-sm overflow-hidden">
+                                                        <div className="p-5">
+                                                            <div className="flex justify-between items-start mb-4">
+                                                                <div>
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="font-black text-slate-800">
+                                                                            Every {s.interval_hours} hr
+                                                                        </span>
+                                                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${s.last_run_status === 'completed' ? 'bg-emerald-100 text-emerald-700' :
+                                                                                s.last_run_status === 'running' ? 'bg-blue-100 text-blue-700 animate-pulse' :
+                                                                                    s.last_run_status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-500'
+                                                                            }`}>
+                                                                            {s.last_run_status}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div className="text-xs font-mono text-slate-400 mt-1 truncate max-w-[250px]">
+                                                                        {s.connection_string || 'Default .env DB'}
+                                                                    </div>
+                                                                    <div className="mt-1">
+                                                                        <span className={`px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase ${s.temporal_mode === 'rolling' ? 'border-amber-200 text-amber-600 bg-amber-50' : 'border-slate-200 text-slate-500 bg-slate-50'}`}>
+                                                                            {s.temporal_mode === 'rolling' ? 'Live Rolling Window' : 'Fixed Schema Window'}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                                <div className="flex gap-2">
+                                                                    <button
+                                                                        onClick={() => handleRunScheduleNow(s.schedule_id)}
+                                                                        title="Trigger Manual Run Now"
+                                                                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100"
+                                                                    >
+                                                                        <RefreshCw className={`w-4 h-4 ${s.last_run_status === 'running' ? 'animate-spin' : ''}`} />
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => handleDeleteSchedule(s.schedule_id)}
+                                                                        title="Delete Schedule"
+                                                                        className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100"
+                                                                    >
+                                                                        <Trash2 className="w-4 h-4" />
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+
+                                                            <div className="grid grid-cols-3 gap-4 py-3 border-t border-slate-50">
+                                                                <div className="text-center border-r border-slate-50">
+                                                                    <div className="text-[10px] font-bold text-slate-400 uppercase">Next Run</div>
+                                                                    <div className="text-sm font-bold text-slate-700 flex items-center justify-center gap-1.5 mt-0.5">
+                                                                        <Clock className="w-3 h-3 text-violet-400" />
+                                                                        {s.next_run_at ? new Date(s.next_run_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never'}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="text-center border-r border-slate-50">
+                                                                    <div className="text-[10px] font-bold text-slate-400 uppercase">Growth</div>
+                                                                    <div className="text-sm font-bold text-slate-700 mt-0.5">+{s.rows_per_run} <span className="text-[10px] font-normal text-slate-400">rows</span></div>
+                                                                </div>
+                                                                <div className="text-center">
+                                                                    <div className="text-[10px] font-bold text-slate-400 uppercase">Runs</div>
+                                                                    <div className="text-sm font-bold text-slate-700 mt-0.5">{s.run_count}</div>
+                                                                </div>
+                                                            </div>
+
+                                                            {s.run_history?.length > 0 && (
+                                                                <div className="mt-4 pt-4 border-t border-slate-50">
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            const target = e.currentTarget.nextElementSibling;
+                                                                            if (target) target.classList.toggle('hidden');
+                                                                        }}
+                                                                        className="text-[10px] font-bold text-violet-500 hover:text-violet-700 transition-colors flex items-center gap-1"
+                                                                    >
+                                                                        <History className="w-3 h-3" />
+                                                                        VIEW RUN HISTORY
+                                                                    </button>
+                                                                    <div className="hidden mt-3 space-y-1.5 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                                                                        {s.run_history.map((h: any) => (
+                                                                            <div key={h.run_id} className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-slate-50 text-[10px]">
+                                                                                <div className="flex items-center gap-2">
+                                                                                    <span className={`w-1.5 h-1.5 rounded-full ${h.status === 'completed' ? 'bg-emerald-400' : 'bg-red-400'}`} />
+                                                                                    <span className="font-mono text-slate-400">{new Date(h.timestamp).toLocaleString()}</span>
+                                                                                </div>
+                                                                                <div className="flex gap-3">
+                                                                                    {h.manual && <span className="text-blue-500 font-bold uppercase italic">Manual</span>}
+                                                                                    <span className="font-bold text-slate-700">+{h.total_records} records</span>
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
                                     </motion.div>
                                 )}
                             </AnimatePresence>

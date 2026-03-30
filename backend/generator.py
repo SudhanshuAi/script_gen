@@ -214,12 +214,39 @@ class DataGenerator:
         dti = pd.to_datetime(ts_array, unit="s", utc=True)
         return pd.Series(dti).dt.tz_localize(None)
 
+    def _get_max_id(self, table_name: str, column_name: str) -> int:
+        """Fetch the current MAX(id) from the database table."""
+        if not PSYCOPG2_AVAILABLE:
+            return 0
+        try:
+            conn = self._get_or_create_shared_conn()
+            if not conn:
+                return 0
+            cur = conn.cursor()
+            # Ensure the table exists
+            cur.execute(f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)", (table_name,))
+            if not cur.fetchone()[0]:
+                return 0
+            cur.execute(f'SELECT MAX("{column_name}") FROM "{table_name}"')
+            row = cur.fetchone()
+            cur.close()
+            if row and row[0] is not None:
+                try:
+                    return int(row[0])
+                except:
+                    return 0
+            return 0
+        except Exception as e:
+            print(f"Failed to fetch MAX({column_name}) from {table_name}: {e}")
+            return 0
+
     def generate_column(self, col_def: Dict, n: int,
                         start_dt: datetime, end_dt: datetime,
                         temporal_cfg: Dict,
                         fk_cache: Dict[str, np.ndarray],
                         intro_offset_days: int = 0,
-                        orphaned_fk_pct: float = 0.0) -> pd.Series:
+                        orphaned_fk_pct: float = 0.0,
+                        entity_name: str = "") -> pd.Series:
         ct = col_def["type"].lower()
         is_pk = col_def.get("primary_key", False)
 
@@ -256,6 +283,12 @@ class DataGenerator:
         if ct == "integer":
             lo, hi = col_def.get("min", 0), col_def.get("max", 1000)
             if is_pk:
+                if self.incremental:
+                    # Fetching current max ID to ensure uniqueness in next run
+                    db_max = self._get_max_id(entity_name, col_def["name"])
+                    lo = max(lo, db_max + 1)
+                    hi = max(hi, lo + n + 1000) # Ensure range is large enough
+                
                 # Ensure uniqueness if range allows, else fall back to randint
                 pop_size = hi - lo + 1
                 if pop_size >= n:
@@ -398,6 +431,7 @@ class DataGenerator:
                     fk_cache      = fk_cache,
                     intro_offset_days = intro_offset,
                     orphaned_fk_pct   = orphan_pct,
+                    entity_name       = name,
                 )
                 chunk_data[col_name] = series.values
 
