@@ -72,7 +72,7 @@ export default function App() {
     const [activeTab, setActiveTab] = useState<'generation' | 'schedules'>('generation');
     const [schedules, setSchedules] = useState<any[]>([]);
     const [isCreatingSchedule, setIsCreatingSchedule] = useState(false);
-    const [scheduleInterval, setScheduleInterval] = useState(3);
+    const [scheduleInterval, setScheduleInterval] = useState(0.5);
     const [scheduleRows, setScheduleRows] = useState(100);
     const [scheduleTemporalMode, setScheduleTemporalMode] = useState<'fixed' | 'rolling'>('fixed');
 
@@ -880,12 +880,14 @@ export default function App() {
                                                 </div>
                                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                                                     <div>
-                                                        <label className="block text-xs font-bold text-violet-700 mb-1">Interval (Hours)</label>
+                                                        <label className="block text-xs font-bold text-violet-700 mb-1">Interval</label>
                                                         <select
                                                             value={scheduleInterval}
                                                             onChange={(e) => setScheduleInterval(parseFloat(e.target.value))}
                                                             className="w-full px-3 py-2 bg-white border border-violet-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-violet-400"
                                                         >
+                                                            <option value={2 / 60}>Every 2 Mins</option>
+                                                            <option value={5 / 60}>Every 5 Mins</option>
                                                             <option value={0.5}>Every 30 Mins</option>
                                                             <option value={1}>Every 1 Hour</option>
                                                             <option value={3}>Every 3 Hours</option>
@@ -966,7 +968,12 @@ export default function App() {
                                                                 <div>
                                                                     <div className="flex items-center gap-2">
                                                                         <span className="font-black text-slate-800">
-                                                                            Every {s.interval_hours} hr
+                                                                            {(() => {
+                                                                                const mins = Math.round(s.interval_hours * 60);
+                                                                                if (mins < 60) return `Every ${mins} Min${mins !== 1 ? 's' : ''}`;
+                                                                                const hrs = s.interval_hours;
+                                                                                return `Every ${hrs} Hour${hrs !== 1 ? 's' : ''}`;
+                                                                            })()}
                                                                         </span>
                                                                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${s.last_run_status === 'completed' ? 'bg-emerald-100 text-emerald-700' :
                                                                                 s.last_run_status === 'running' ? 'bg-blue-100 text-blue-700 animate-pulse' :

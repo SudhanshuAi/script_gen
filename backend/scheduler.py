@@ -47,9 +47,11 @@ class DataScheduler:
 
     def _add_to_apscheduler(self, schedule_id: str, sdata: Dict[str, Any]):
         interval_hours = sdata.get("interval_hours", 1)
+        # Use minutes for sub-hour intervals (e.g. 2 min = 2/60 h, 5 min = 5/60 h)
+        interval_minutes = interval_hours * 60
         self.scheduler.add_job(
             func=self.execute_run,
-            trigger=IntervalTrigger(hours=interval_hours),
+            trigger=IntervalTrigger(minutes=interval_minutes),
             args=[schedule_id],
             id=schedule_id,
             replace_existing=True
@@ -141,7 +143,10 @@ class DataScheduler:
             local_schema = sdata["schema"].copy()
             if sdata.get("temporal_mode") == "rolling":
                 now_dt = datetime.now(timezone.utc)
-                window_start = now_dt - timedelta(hours=sdata["interval_hours"])
+                interval_minutes = sdata["interval_hours"] * 60
+                # Use at least 1 day window for very short intervals so dates differ
+                window_minutes = max(interval_minutes, 1440)  # minimum 1 day
+                window_start = now_dt - timedelta(minutes=window_minutes)
                 if "temporal" not in local_schema:
                     local_schema["temporal"] = {}
                 local_schema["temporal"]["start_date"] = window_start.strftime("%Y-%m-%d")
